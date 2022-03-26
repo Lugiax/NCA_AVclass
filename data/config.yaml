@@ -1,0 +1,23 @@
+---
+#Parámetros autómata
+CHANNEL_N: 10
+CELL_FIRE_RATE: 0.5
+N_ITER: 20
+AUTOMATA_SHAPE: [100,100]
+
+#Parámetros datos
+AGREGAR_GIRARD: False
+SIN_MASCARA: True
+SELEM_SIZE: 5
+ADD_NOISE: True
+
+#Parámetros entrenamiento
+#TODO: cambiar el comportamiento para ir leyendo
+#cada imagen y hacer el aumento de datos
+#DB_FNAME: 
+BATCH_SIZE: 2
+EPOCHS: 20
+
+#Arquitectura red
+CAPAS: #Nombre y parametros...
+  - [bloque_res_simple, 20]
