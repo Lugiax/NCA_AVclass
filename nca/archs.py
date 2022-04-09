@@ -1,7 +1,11 @@
-from tensorflow.keras.layers import Conv2D, Activation, Add
+from keras.layers import Conv2D, Activation, Add
 import tensorflow as tf
 
 class bloque_res_simple(tf.keras.layers.Layer):
+    """Bloque tipo Resnet simple. El proceso se bifurca
+    después de la primera capa de convolución, para al final
+    obener la suma de ambas bifuraciones.
+    """
     def __init__(self, size=None):
         super(bloque_res_simple, self).__init__()
         #self.padre = padre #El modelo al que pertenece
@@ -37,6 +41,9 @@ class bloque_res_simple(tf.keras.layers.Layer):
 
 
 class conv(tf.keras.layers.Layer):
+    """
+    Capa simple de convolución
+    """
     def __init__(self, size=None):
         super(conv, self).__init__()
         self.conv = Conv2D(size, 1, padding="SAME", activation='relu')
@@ -44,20 +51,7 @@ class conv(tf.keras.layers.Layer):
     def call(self, x):
         return self.conv(x)
 
-"""
-MODELS = {
-    'simple':   [
-                Conv2D(80, 1, padding='SAME', activation='relu'),  
-                ],
-    'mini_res': [
-                bloque_res_simple(80)
-                ]
-}
-
-def get_hidden(name):
-    assert name in MODELS, 'Modelo no existente'
-    return MODELS.get(name)
-"""
+#Definición de todas las arquitecturas disponibles
 ARCHS = {
     'bloque_res_simple': bloque_res_simple,
     'simple': conv

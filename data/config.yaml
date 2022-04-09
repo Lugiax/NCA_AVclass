@@ -1,23 +1,34 @@
----
-#Parámetros autómata
-CHANNEL_N: 10
-CELL_FIRE_RATE: 0.5
-N_ITER: 20
-AUTOMATA_SHAPE: [100,100]
+#Nombre del proyecto
+project: project_name
+#Nombre del usuario
+entity: user_name
+#Etiquetas del experimento
+tags:
+  - 'TAGS'
+  - 'TO'
+  - 'USE'
+#Notas
+notes: something to commit
 
-#Parámetros datos
-AGREGAR_GIRARD: False
-SIN_MASCARA: True
-SELEM_SIZE: 5
-ADD_NOISE: True
+#Configuraciones
+config:
+  #Automata config
+  channel_n: 10
+  cell_fire_rate: 0.5
+  iter_n: 20
+  automata_shape: [100,100]
 
-#Parámetros entrenamiento
-#TODO: cambiar el comportamiento para ir leyendo
-#cada imagen y hacer el aumento de datos
-#DB_FNAME: 
-BATCH_SIZE: 2
-EPOCHS: 20
+  #Parámetros datos
+  imgs_dir: data/ # Va a parte
+  add_noise: True #Va a parte
 
-#Arquitectura red
-CAPAS: #Nombre y parametros...
-  - [bloque_res_simple, 20]
+  #Parámetros entrenamiento
+  batch_imgs_n: 2
+  image_augment_n: 4
+  crop_shape: [800,800]
+  epochs: 10
+
+  #Arquitectura red
+  capas: #Nombre y parametros...
+    - [bloque_res_simple, 20]
+

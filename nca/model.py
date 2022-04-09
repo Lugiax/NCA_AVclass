@@ -1,19 +1,38 @@
-from tensorflow.python.framework import convert_to_constants
-from google.protobuf.json_format import MessageToDict
-from tensorflow.keras.layers import Conv2D, Dropout
-from abc import abstractmethod
+from keras.layers import Conv2D
+from tensorflow_datasets.typing import Tensor
 import matplotlib.pylab as pl
 import tensorflow as tf
 import numpy as np
-import PIL
-import json
-import os
+import wandb
 
 from nca.losses import batch_l2_loss
 from nca.archs import ARCHS
+from nca.dataset_gen import DSFactory
 
 
-from typing import Any, List, Union, Optional, Tuple
+from typing import List, TypedDict, Iterable, Any, Tuple, Optional
+
+###  Annotation types
+
+class NCAConfig(TypedDict):
+    #Arquitectura del autómata
+    channel_n: int #Número de canales ocultos
+    cell_fire_rate: float #0-1
+    iter_n: int #Iteraciones del autómata
+    automata_shape: List[int] #[H,W]
+    
+    #Parámetros de entrenamiento
+    batch_imgs_n: int #imágenes diferentes por batch
+    image_augment_n: int #aumento de datos por imagen
+    crop_shape: List[int] #Dimensiones del recorte 
+                          #principal, [H,W]
+    epochs: int #número de épocas
+
+    #Arquitectura red
+    capas: List[List[Any]] #Lista de listas con la configuración
+                           #de la red.
+
+###
 
 
 class Base(tf.keras.Model):
@@ -23,26 +42,9 @@ class Base(tf.keras.Model):
     )
     trainer = tf.keras.optimizers.Adam(lr_sched)
 
-    def __init__(self, config: dict):
-        """
-        El objeto de configuración es el resultado de la lectura de
-        utils.cargar_config. Este devuelve un diccionario leído de un
-        archivo YAML.
-        :param config: Datos de configuración
-        :type config: dict
-        """
+    def __init__(self, config: NCAConfig):
         super().__init__()
-        self.automata_shape = config["AUTOMATA_SHAPE"]
-        self.channel_n = config["CHANNEL_N"]
-        self.extra_chnl = 0
-        if config["AGREGAR_GIRARD"]:
-            self.extra_chnl += 3
-        elif config["SIN_MASCARA"]:
-            self.extra_chnl -= 1
-        self.fire_rate = config["CELL_FIRE_RATE"]
-        self.add_noise = config["ADD_NOISE"]
-        self.capas_config = config["CAPAS"]
-        self.config = config
+        self.base_config = config
 
         # Capa de percepción
         self.perceive = tf.keras.Sequential(
@@ -52,9 +54,9 @@ class Base(tf.keras.Model):
         )
 
         # Construcción del modelo
-        raw_model = self.load_yaml_model(self.capas_config) + [
+        raw_model = self.load_yaml_model(self.base_config['capas']) + [
             Conv2D(
-                self.channel_n,
+                self.base_config['channel_n'],
                 1,
                 activation=None,
                 kernel_initializer=tf.zeros_initializer,
@@ -62,19 +64,22 @@ class Base(tf.keras.Model):
         ]
         self.dmodel = tf.keras.Sequential(raw_model)
 
+        #LLamada para construir el modelo
         self(
             tf.zeros(
                 [
                     1,
-                    self.automata_shape[0],
-                    self.automata_shape[1],
-                    self.channel_n + 4 + self.extra_chnl,
+                    self.base_config['automata_shape'][0],
+                    self.base_config['automata_shape'][1],
+                    self.base_config['channel_n'] + 3
                 ]
             )
-        )  # dummy calls to build the model
-
-    def load_yaml_model(self, yaml_list: List[List[Any, int]]) -> List[Any]:
-        """_summary_
+        ) 
+        
+        
+    @staticmethod
+    def load_yaml_model(yaml_list: list):
+        """Función para 
 
         :param yaml_list: Arquitectura de la red en un formato:
                           [[capa1, param1],
@@ -90,17 +95,29 @@ class Base(tf.keras.Model):
             _capas.append(ARCHS[c[0]](c[1]))
         return _capas
 
-    def guardar_pesos(self, filename):
+    def guardar_pesos(self, filename:str):
         self.save_weights(filename)
 
-    def cargar_pesos(self, filename):
+    def cargar_pesos(self, filename:str):
         self.load_weights(filename)
 
     @tf.function
-    def train_step(self, x, y):
-        iter_n = self.config["N_ITER"]
+    def train_step(self, x: Tensor, y: Tensor) -> Tuple[Tensor, float]:
+        """Paso de entrenamiento. Toma los dos tensores X y Y e
+        itera sobre ellos, cambiando sus valores según la función
+        de transición.
+
+        :param x: Datos de entrenamiento independientes
+        :type x: Tensor
+        :param y: Etiquetas de entrenamiento de X
+        :type y: Tensor
+        :return: Tupla con: El último estados de X, y el valor de pérdida
+        promedio del batch
+        :rtype: Tuple[Tensor, float]
+        """        
+        
         with tf.GradientTape() as g:
-            for i in tf.range(iter_n):
+            for i in tf.range(self.base_config["iter_n"]):
                 x = self(x, training=True)
             loss = batch_l2_loss(self, x, y)
         grads = g.gradient(loss, self.weights)
@@ -109,19 +126,19 @@ class Base(tf.keras.Model):
         return x, loss
 
     @tf.function
-    def classify(self, x):
+    def classify(self, x: Tensor)->Tensor:
         """
         Devuelve las últimas dos capas ocultas. Estas son las clasificaciones
         """
         return x[:, :, :, -2:]
 
     @tf.function
-    def predict(self, x, binary=False):
+    def predict(self, x: Tensor, binary:bool=False) -> Tensor:
         """
         Devuelve las máscaras binarias de las clasificaciones.
         """
         x0 = self.initialize(x)
-        for _ in range(20):
+        for _ in range(self.base_config['iter_n']):
             x0 = self(x0)
 
         y_pred = self.classify(x0)
@@ -134,137 +151,81 @@ class Base(tf.keras.Model):
 
             return y_pred > 0
 
-    @abstractmethod
+    
     @tf.function
     def initialize(self):
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     @tf.function
     def call(self):
-        pass
+        raise NotImplementedError
 
-    @abstractmethod
     def fit(self):
-        pass
+        raise NotImplementedError
 
 
-class Masked(Base):
+
+
+class NCA(Base):
     @tf.function
-    def initialize(self, images, normalize=True):
+    def initialize(self, images: Tensor)->Tensor:
+        """Función para inicializar el lote de entrada. 
+        Aquí se crean las capas ocultas y se organizan las
+        capas para el correcto funcionamiento del autómata
+
+        :param images: Tensor de imágenes de entrenamiento
+        :type images: Tensor
+        :return: Tensor de estado del autómata
+        :rtype: Temsor
+        """        
+        automata_shape = self.base_config['automata_shape']
         state = tf.zeros(
             [
                 images.shape[0],
-                self.automata_shape[0],
-                self.automata_shape[1],
-                self.channel_n,
+                automata_shape[0],
+                automata_shape[1],
+                self.base_config['channel_n'],
             ]
         )
-        images = tf.image.resize(images, self.automata_shape, antialias=True)
+        images = tf.image.resize(images, automata_shape, antialias=True)
         images = tf.reshape(
             images,
-            [-1, self.automata_shape[0], self.automata_shape[1], 4 + self.extra_chnl],
+            [-1, automata_shape[0], automata_shape[1], 3],
         )
         return tf.cast(tf.concat([images, state], -1), tf.float32)
 
     @tf.function
-    def call(self, x, fire_rate=None, manual_noise=None, training=False):
+    def call(self, x:Tensor, fire_rate: Optional[float]=None, training:bool=False)->Tensor:
+        """Función de llamada del autómata. Aquí se define cómo
+        se llevará a cabo cada paso del autómata. Los datos se
+        hacen pasar primero por la capa de percepción, luego 
+        se evalua la función de transición y se hace un tratado
+        de los datos para actuallizar el estado.
+
+        :param x: Datos de entrada (estado previo del autómata)
+        :type x: Tensor
+        :param fire_rate: Umbral mínimo para el encendido de las
+        células, predefinido a None
+        :type fire_rate: Optional[float], optional
+        :param training: Parámetro para definir si el proceso es de
+        entrenamiento, predefinido a False
+        :type training: bool, optional
+        :return: Tensor del estado del autómata actualizado
+        :rtype: Tensor
+        """        
         self.training = training
-        img_norm, gray, state = tf.split(
-            x, [3 + self.extra_chnl, 1, self.channel_n], -1
-        )
+        img_norm, state = tf.split(x, [3, self.base_config['channel_n']], -1)
         ds = self.dmodel(self.perceive(x))
-        if self.add_noise:
-            if manual_noise is None:
-                residual_noise = tf.random.normal(tf.shape(ds), 0.0, 0.02)
-            else:
-                residual_noise = manual_noise
-            ds += residual_noise
+        if self.base_config['add_noise']:
+            ds += tf.random.normal(tf.shape(ds), 0.0, 0.02)
 
         if fire_rate is None:
-            fire_rate = self.fire_rate
-        update_mask = (
-            tf.random.uniform(
-                tf.shape(x[..., 3 + self.extra_chnl : 4 + self.extra_chnl])
-            )
-            <= fire_rate
-        )
-        living_mask = gray > 0.1
-        residual_mask = update_mask & living_mask
-        ds *= tf.cast(residual_mask, tf.float32)
-        state += ds
-
-        return tf.concat([img_norm, gray, state], -1)
-
-    @abstractmethod
-    def fit(self, x_train, y_train_pic):
-        loss_log = []
-        for i in range(self.config["EPOCHS"]):
-            b_idx = np.random.randint(
-                0, x_train.shape[0] - 1, size=self.config["BATCH_SIZE"]
-            )
-            x0 = self.initialize(tf.gather(x_train, b_idx))
-            y0 = tf.gather(y_train_pic, b_idx)
-
-            x, loss = self.train_step(x0, y0)
-
-            step_i = len(loss_log)
-            loss_log.append(loss.numpy())
-
-            if step_i % 100 == 0:
-                with open(os.path.join(self.config["SAVE_DIR"], "loss.txt"), "w") as f:
-                    f.write(", ".join([str(i) for i in loss_log]))
-                save_plot_loss(loss, self.config)
-                save_batch_vis(self, x0, y0, x, step_i, self.config)
-
-            if step_i % 5000 == 0:
-                self.guardar_pesos(
-                    os.path.join(self.config["SAVE_DIR"], "model/%07d" % step_i)
-                )
-
-            print(
-                "\r step: %d, log10(loss): %.3f" % (len(loss_log), np.log10(loss)),
-                end="",
-            )
-
-        self.guardar_pesos(os.path.join(self.config["SAVE_DIR"], "model/last"))
-
-
-class Unmasked(Base):
-    @tf.function
-    def initialize(self, images, normalize=True):
-        state = tf.zeros(
-            [
-                images.shape[0],
-                self.automata_shape[0],
-                self.automata_shape[1],
-                self.channel_n,
-            ]
-        )
-        images = tf.image.resize(images, self.automata_shape, antialias=True)
-        images = tf.reshape(
-            images,
-            [-1, self.automata_shape[0], self.automata_shape[1], 4 + self.extra_chnl],
-        )
-        return tf.cast(tf.concat([images, state], -1), tf.float32)
-
-    @tf.function
-    def call(self, x, fire_rate=None, manual_noise=None, training=False):
-        self.training = training
-        # self.extra_chnl debe ser -1 (sin máscara) o 2 (girard)
-        img_norm, state = tf.split(x, [4 + self.extra_chnl, self.channel_n], -1)
-        ds = self.dmodel(self.perceive(x))
-        if self.add_noise:
-            if manual_noise is None:
-                residual_noise = tf.random.normal(tf.shape(ds), 0.0, 0.02)
-            else:
-                residual_noise = manual_noise
-            ds += residual_noise
-
-        if fire_rate is None:
-            fire_rate = self.fire_rate
+            fire_rate = self.base_config['cell_fire_rate']
+            
         update_mask = tf.random.uniform(tf.shape(x[..., :1])) <= fire_rate
         living_mask = tf.expand_dims(tf.math.reduce_max(state[..., -2:], axis=-1), -1)
+        
+        #Dilation for removing noise
         dilated_mask = tf.nn.dilation2d(
             living_mask,
             filters=tf.ones((3, 3, living_mask.shape[-1])),
@@ -279,21 +240,32 @@ class Unmasked(Base):
         concatenada = tf.concat([img_norm, state], -1)
         return concatenada
 
-    def fit(self, x_train, y_train_pic):
+    def fit(self, data_factory:Iterable):
+        """Proceso de entrenamiento del autómata. Como único
+        parámetro necesita un generador de datos. Así como está
+        definido en el dataset_gen.
+
+        :param data_factory: Generador de datos
+        :type data_factory: Iterable
+        """        
+        #data_factory = DSFactory(self.base_config['imgs_dir'], self.base_config['automata_shape'])
         loss_log = []
-        for i in range(self.config["EPOCHS"]):
-            b_idx = np.random.randint(
-                0, x_train.shape[0] - 1, size=self.config["BATCH_SIZE"]
-            )
-            x0 = self.initialize(tf.gather(x_train, b_idx))
-            y0 = tf.gather(y_train_pic, b_idx)
+        for i in range(self.base_config["epochs"]):
+            print(f'Época {i+1}, loss:', end='')
+            train_data = data_factory.generar(self.base_config['batch_imgs_n'],
+                                              self.base_config['image_augment_n'],
+                                              self.base_config['crop_shape'])
+            
+            x0 = self.initialize(train_data[..., :3])
+            y0 = train_data[..., 3:]
 
             x, loss = self.train_step(x0, y0)
+            print(loss)
 
             step_i = len(loss_log)
             loss_log.append(loss.numpy())
 
-            if step_i % 100 == 0:
+            """if step_i % 100 == 0:
                 with open(os.path.join(self.config["SAVE_DIR"], "loss.txt"), "w") as f:
                     f.write(", ".join([str(i) for i in loss_log]))
                 save_plot_loss(loss, self.config)
@@ -310,122 +282,24 @@ class Unmasked(Base):
             )
 
         self.guardar_pesos(os.path.join(self.config["SAVE_DIR"], "model/last"))
-
-## Funciones auxiliares
-color_lookup = tf.constant([
-            [128, 0, 0],  #Para arterias, Rojo
-            [0, 128, 128], #Para venas, Azul
-            [0, 0, 0], # This is the default for digits/vasos sanguíneos
-            [255, 255, 255] # This is the background.
-            ])
-
-backgroundWhite = True
-def color_labels(x, y_pic, disable_black=False, dtype=tf.uint8):
-    # works for shapes of x [b, r, c] and [r, c]
-    if x.shape[-1]==4:
-        mask = x[..., -1]
-    elif x.shape[-1]==3:
-        mask = tf.math.reduce_max(y_pic, axis=-1)
-    black_and_white = tf.fill(list(mask.shape) + [2], 0.01)
-    is_gray = tf.cast(mask > 0.1, tf.float32)
-    is_not_gray = 1. - is_gray
-    y_pic = y_pic * tf.expand_dims(is_gray, -1) # forcibly cancels everything outside of it.
-  
-    # if disable_black, make is_gray super low.
-    if disable_black:
-        is_gray *= -1e5
-        # this ensures that you don't draw white in the digits.
-        is_not_gray += is_gray
-
-    bnw_order = [is_gray, is_not_gray] if backgroundWhite else [is_not_gray, is_gray]
-    black_and_white *= tf.stack(bnw_order, -1)
-
-    rgb = tf.gather(
-      color_lookup,
-      tf.argmax(tf.concat([y_pic, black_and_white], -1), -1))
-    if dtype == tf.uint8:
-        return tf.cast(rgb, tf.uint8)
-    else:
-        return tf.cast(rgb, dtype) / 255.
-
-
-def classify_and_color(ca, x, y0=None, disable_black=False):
-    if y0 is not None:
-        return color_labels(
-                x[:,:,:,:4], y0, disable_black, dtype=tf.float32)
-    else:
-        return color_labels(
-            x[:,:,:,:4], ca.classify(x), disable_black, dtype=tf.float32)
-        
-
-
-def save_plot_loss(loss_log, config):
-    pl.figure(figsize=(6, 3))
-    pl.title('Loss history (log10)')
-    pl.plot(np.log10(loss_log), '.', alpha=0.4)
-    pl.xlabel('Epoch')
-    pl.ylabel(f'log10(L)')
-    pl.savefig(os.path.join(config['SAVE_DIR'], 'figures', 'loss.png'))
-
-
-def np2pil(a):
-    if a.dtype in [np.float32, np.float64]:
-        a = np.uint8(np.clip(a, 0, 1)*255)
-    return PIL.Image.fromarray(a)
-
-def imwrite(f, a, fmt=None):
-    a = np.asarray(a)
-    if isinstance(f, str):
-        fmt = f.rsplit('.', 1)[-1].lower()
-        if fmt == 'jpg':
-            fmt = 'jpeg'
-        f = open(f, 'wb')
-    np2pil(a).save(f, fmt, quality=95)
-
-def save_batch_vis(ca, x0, y0, x, step_i, config):
-    vis_1 = np.hstack(x0[..., :3])
-    vis0 = np.hstack(classify_and_color(ca, x0, y0).numpy())
-    vis1 = np.hstack(classify_and_color(ca, x).numpy())
-    vis = np.vstack([vis_1, np.hstack(x0[..., 3:6]), vis0, vis1])\
-                     if config['AGREGAR_GIRARD'] else np.vstack([vis_1, vis0, vis1])
-    imwrite(os.path.join(config['SAVE_DIR'], 'figures', 'batches_%04d.jpg'%step_i), vis)
-
-
-def export_model(ca, base_fn, args):
-    ca.save_weights(base_fn)
-    with open(os.path.split(base_fn)[0]+'config.txt','w') as f:
-        f.write(f"""
-CHANNEL_N = {args.n_channels}
-CELL_FIRE_RATE = Revisar en automata. Generalmente 0.5
-N_ITER = {args.n_iter}
-BATCH_SIZE = {args.n_batch}
-ADD_NOISE = {args.add_noise}
-DATA = {args.db_name}
-AGREGAR_GIRARD = {args.agregar_girard}
-SELEM_SIZE = {args.selem_size if args.agregar_girard else None}
-
-
-Arquitectura:
-{args.model_name},
-Conv2D(self.channel_n, 1, activation=None,
-            kernel_initializer=tf.zeros_initializer),
-            """)
-
-    cf = ca.call.get_concrete_function(
-        x=tf.TensorSpec([None, None, None, args.n_channels+4+args.extra_channels]),
-        fire_rate=tf.constant(0.5),
-        manual_noise=tf.TensorSpec([None, None, None, args.n_channels]))
-    cf = convert_to_constants.convert_variables_to_constants_v2(cf)
-    graph_def = cf.graph.as_graph_def()
-    graph_json = MessageToDict(graph_def)
-    graph_json['versions'] = dict(producer='1.14', minConsumer='1.14')
-    model_json = {
-        'format': 'graph-model',
-        'modelTopology': graph_json,
-        'weightsManifest': [],
-    }
-    with open(base_fn+'.json', 'w') as f:
-        json.dump(model_json, f)
+        """
 
 if __name__ == "__main__":
-    print("HOLA!!!")
+    from nca.utils import cargar_config
+    from PIL import Image
+    
+    print("Probando modelo")
+    
+    config = cargar_config('data/base_inference_model.yaml')
+    model = NCA(config)
+    
+    img = Image.open('data/f_001.jpg')
+    img_arr = np.asarray(img)/255.
+    x = tf.constant(img_arr[None, ...])
+    y = model.predict(x)
+    import matplotlib.pyplot as plt
+    print(y.shape)
+    plt.imshow(y[0, ..., -1], 'gray')
+    plt.show()
+    plt.imshow(y[0, ..., -2], 'gray')
+    plt.show()

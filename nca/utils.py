@@ -1,28 +1,23 @@
-from skimage.morphology import disk, binary_dilation, square
 from skimage.filters import gaussian, threshold_multiotsu
-from skimage.filters.rank import median
 from skimage.measure import regionprops, label
 from skimage.transform import resize, rescale
-from skimage.io import imread
-import matplotlib.pylab as pl
 import tensorflow as tf
 import numpy as np
-import PIL.Image
 import yaml
-import re
-import os
+
+
+
+def cargar_config(fname, save_dir='.'):
+    with open(fname, 'r') as f:
+        config = yaml.safe_load(f)
+    config['SAVE_DIR'] = save_dir
+    return config
 
 
 def segment(img, sigma, umbral=None):
-
-    #plt.imshow(img)
-    #plt.title('Original')
-    #plt.show()
     _x, _y = np.meshgrid(np.linspace(-1,1, img.shape[1]), np.linspace(-1,1, img.shape[0]))
     dst = np.sqrt(_x*_x + _y*_y)
     gauss_curve = np.exp( -( dst**2 / ( 2 * 1.4**2) ))
-    #plt.imshow(gauss_curve)
-    #plt.show()
 
     chns = []
     for k in range(3):
@@ -67,86 +62,8 @@ def get_optical_disk_center(im, scale=None, sigma=13, ra=75):
     mejor = sorted(candidatas, key = lambda x: x[1], reverse=reverse)[0]#Ordenar según la razón o redondez
     return [int(v/scale) for v in mejor[0]]# cy, cx
 
-def normalize_girard(batch, sigma=2, selem_size=5):
-    def join(r,g,b):
-        return np.concatenate((r[..., np.newaxis], g[..., np.newaxis], b[..., np.newaxis]), axis=2)
-    new_batch = []
-    for j in range(batch.shape[0]):
-        rgb = batch[j, ..., :3]
-        R = np.uint(rgb[..., 0]*255)
-        G = np.uint(rgb[..., 1]*255)
-        B = np.uint(rgb[..., 2]*255)
-        difs = []
-        medians_std = []
-        for c in (R,G,B):
-            med = median(c, square(selem_size))
-            dif = c-med
-            difs.append(dif)
-            medians_std.append(np.std(dif))
-
-        new_batch.append(join(*[sigma*dif/std+0.5 for dif, std in zip(difs, medians_std)]))
-
-    return np.stack(new_batch) #tf.cast(tf.stack(new_batch), tf.float32)
-
-def cargar_dataset(fname, agregar_girard=False, selem_size=5):
-    with open(fname, 'rb') as f:
-        x_train = np.load(f)
-        y_train_pic =np.load(f)
-        x_test = np.load(f)
-        y_test_pic = np.load(f)
-
-    original_channels=x_train.shape[-1]
-    new_idx_train = np.random.randint(0, x_train.shape[0]-1, size=x_train.shape[0])
-    new_idx_test = np.random.randint(0, x_test.shape[0]-1, size=x_test.shape[0])
-
-    if agregar_girard:
-        x_train = tf.cast(
-                tf.concat((x_train[new_idx_train, ..., :3],
-                            normalize_girard(x_train[new_idx_train, ..., :3], selem_size=selem_size),
-                            np.ceil(x_train[new_idx_train ,..., -1:])),
-                            axis=-1), tf.float32)
-        x_test = tf.cast(
-                tf.concat((x_test[new_idx_test, ..., :3],
-                            normalize_girard(x_test[new_idx_test, ..., :3], selem_size=selem_size),
-                            np.ceil(x_test[new_idx_test ,..., -1:])),
-                            axis=-1), tf.float32)
-    else:
-        x_train = tf.cast(
-                tf.concat((x_train[new_idx_train, ..., :3],
-                            np.ceil(x_train[new_idx_train ,..., -1:])),
-                            axis=-1), tf.float32)
-        x_test = tf.cast(
-                tf.concat((x_test[new_idx_test, ..., :3],
-                            np.ceil(x_test[new_idx_test ,..., -1:])),
-                            axis=-1), tf.float32)
-
-    y_train_pic = tf.cast(y_train_pic[new_idx_train], tf.float32)
-    y_test_pic = tf.cast(y_test_pic[new_idx_test], tf.float32)
-
-    #No encontré otra forma mejor para quitar la "máscara de las imágenes que no la tienen"
-    return x_train[..., :original_channels], y_train_pic, x_test[..., :original_channels], y_test_pic
 
 
-def cargar_config(fname, automata_shape=None, save_dir='.'):
-    with open(fname, 'r') as f:
-        config = yaml.load(f)
-    
-    config['AUTOMATA_SHAPE'] = [int(re.findall(r'(\d+)aut', config['DB_FNAME'])[0])]*2\
-                                    if automata_shape is None else automata_shape
-    config['SAVE_DIR'] = save_dir
-    return config
-
-
-
-
-def abrir_img(path, shape=None):
-    if path.split('.')[-1] in ['tif', 'tiff']:
-        img = np.array(PIL.Image.open(path))
-    else:
-        img = imread(path)
-    if shape is not None:
-        img = resize(img, shape)
-    return img
 
 
 def calcular_metricas(y_true, y_pred):

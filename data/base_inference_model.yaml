@@ -1,0 +1,12 @@
+#Automata config
+channel_n: 10
+cell_fire_rate: 0.5
+iter_n: 20
+automata_shape: [100,100]
+
+add_noise: False
+crop_shape: [800,800]
+
+#Arquitectura red
+capas: #Nombre y parametros...
+  - [bloque_res_simple, 20]
