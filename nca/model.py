@@ -3,7 +3,6 @@ from tensorflow_datasets.typing import Tensor
 import matplotlib.pylab as pl
 import tensorflow as tf
 import numpy as np
-import wandb
 
 from nca.losses import batch_l2_loss
 from nca.archs import ARCHS
